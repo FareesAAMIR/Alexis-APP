@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import datetime
+import base64
 import altair as alt
 import urllib.parse
 from streamlit_extras.sandbox import sandbox
@@ -19,7 +20,7 @@ import plotly.graph_objects as go
 from streamlit import expander
 from streamlit_option_menu import option_menu
 
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbws-rrMtZKiCSBTTg7pfVuDH93LcOM-RrDRayAerWsgMVVLPCOZGvP1fND6mcvZEI2oWg/exec"
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzgzxotlsMo48YTeGYn8Y5WARCsqyOys2Dlj-e3VYvJVnC8NWXKeMc77wCSZW2vtyuuJA/exec"
 
 st.set_page_config(
     page_title="Dashboard Client",
@@ -57,6 +58,7 @@ with st.sidebar:
             },
         }    )
 
+@st.cache_data(ttl=300)  # Cache pendant 5 minutes
 def get_clients():
     try:
         response = requests.get(WEBHOOK_URL, params={"action": "get_clients"})
@@ -98,6 +100,7 @@ def show_dashboard(client):
         with st.expander("ℹ️ Détails personnels", expanded=True):
             st.header(client["prenom"])
 
+
             infos = {
                 "📧 Email": client.get("email", "Non spécifié"),
                 "📞 Téléphone": client.get("telephone", "Non spécifié"),
@@ -113,7 +116,7 @@ def show_dashboard(client):
 
             with col0:
                 st.image(
-                    "Screenshot 2025-06-16 at 16.37.20.png",
+                    client.get("photo_profil"),
                     width=180,
                     caption=client.get("prenom", "Profil"),
                 )
@@ -156,115 +159,73 @@ def show_dashboard(client):
         progress = (float(85) - 67) / (float(85))
         st.progress(min(max(progress, 0), 1))
         # ---------------------------
+        sheet_name = f"{client['prenom']}_{client['nom']}"
 
-        st.metric(label="Composition corporelle ", value="Pas encore évalué", delta=1000,
+        response = requests.get(f"{WEBHOOK_URL}?sheet_name={sheet_name}")
+
+        data = response.json()
+        scores = data.get("scores", [])
+
+        # 🔹 Récupération du dernier score
+        if scores:
+            last_score = scores[-1]["score"]  # dernier enregistré
+        else:
+            last_score = "Pas encore évalué"
+
+        st.metric(label="IMC", value=last_score, delta="Dernier score calculé",
                   border=True)
 
         @st.dialog("Formulaire de compo corporelle")
 
         def health_form():
             st.write("## 🩺 Questionnaire Santé Complet")
+            poids_defaut = client.get("poids")
 
-            # --- Infos de base ---
-            poids = st.number_input("⚖️ Quel est votre poids (en kg) ?", min_value=0.0, step=0.1, key="poids_input")
-            taille = st.number_input("📏 Quelle est votre taille (en cm) ?", min_value=0.0, step=0.1,
-                                     key="taille_input")
-            age = st.number_input("🎂 Quel est votre âge ?", min_value=0, max_value=120, step=1, key="age_input")
-
-            # --- Habitudes de vie ---
-            sommeil = st.slider("😴 Combien d'heures dormez-vous par nuit ?", 0, 12, value=7, key="sommeil_input")
-            hydratation = st.slider("💧 Combien de verres d’eau buvez-vous par jour ?", 0, 15, value=6,
-                                    key="hydratation_input")
-            fumeur = st.radio("🚬 Êtes-vous fumeur ?", ["Oui", "Non"], key="fumeur_input")
-            alcool = st.radio("🍷 Consommez-vous de l’alcool régulièrement ?", ["Oui", "Non"], key="alcool_input")
-            activite = st.selectbox("🏃‍♂️ Fréquence d'activité physique par semaine",
-                                    ["Aucune", "1-2 fois", "3-4 fois", "5 fois ou plus"], key="activite_input")
-            alimentation = st.selectbox("🥗 Qualité de votre alimentation",
-                                        ["Mauvaise", "Moyenne", "Bonne", "Excellente"], key="alimentation_input")
-            stress = st.slider("⚡ Niveau de stress perçu (0 = aucun, 10 = extrême)", 0, 10, 5, key="stress_input")
-
-            # --- Antécédents santé ---
-            douleurs = st.radio("🤕 Ressentez-vous des douleurs chroniques ?", ["Oui", "Non"], key="douleurs_input")
-            maladies = st.multiselect("🏥 Avez-vous des antécédents médicaux ?",
-                                      ["Hypertension", "Diabète", "Cardiaque", "Respiratoire", "Autres", "Aucun"],
-                                      key="maladies_input")
+            try:
+                poids_defaut = float(poids_defaut)
+            except (TypeError, ValueError):
+                poids_defaut = 0.0
+                # --- Infos de base ---
+            poids = st.number_input("⚖️ Quel est votre poids (en kg) ?", min_value=0.0, value=float(client.get("poids") or 0.0),step=0.1, key="poids_input")
+            taille = float(client.get("taille"))
 
             # --- Validation ---
             if st.button("✅ Calculer mon score santé"):
-                if poids == 0 or taille == 0 or age == 0:
+                if poids == 0:
                     st.warning("⚠️ Merci de saisir un poids, une taille et un âge valides.")
                     return
 
                 # --- Calcul IMC ---
                 imc = poids / ((taille / 100) ** 2)
 
-                # --- Calcul du pourcentage de graisse corporelle estimé ---
-                # Formule de Deurenberg pour les adultes
-                body_fat_percentage = 1.2 * imc + 0.23 * age - 10.8 * 1 - 5.4
-
-                # --- Base score ---
                 score = 100
 
-                # Poids / IMC
-                if imc < 18.5 or imc > 24.9:
-                    score -= 15
-
-                # Sommeil
-                if sommeil < 7 or sommeil > 9:
-                    score -= 10
-
-                # Hydratation
-                if hydratation < 5:
-                    score -= 5
-
-                # Fumeur / Alcool
-                if fumeur == "Oui":
-                    score -= 20
-
-                if alcool == "Oui":
-                    score -= 5
-
-                # Activité physique
-                activite_points = {"Aucune": 0, "1-2 fois": 10, "3-4 fois": 20, "5 fois ou plus": 30}
-                score += activite_points.get(activite, 0)
-
-                # Alimentation
-                alimentation_points = {"Mauvaise": 0, "Moyenne": 10, "Bonne": 20, "Excellente": 30}
-                score += alimentation_points.get(alimentation, 0)
-
-                # Stress
-                score -= stress * 2
-
-                # Douleurs / Maladies
-                if douleurs == "Oui":
-                    score -= 10
-
-                if "Hypertension" in maladies or "Diabète" in maladies or "Cardiaque" in maladies:
-                    score -= 10
-
-                # Score final borné
                 score = max(0, min(score, 100))
-
+                scor = score
                 # --- Sauvegarde ---
                 st.session_state.health_data = {
                     "poids": poids,
                     "taille": taille,
-                    "age": age,
                     "imc": round(imc, 1),
-                    "body_fat_percentage": round(body_fat_percentage, 1),
-                    "sommeil": sommeil,
-                    "hydratation": hydratation,
-                    "fumeur": fumeur,
-                    "alcool": alcool,
-                    "activite": activite,
-                    "alimentation": alimentation,
-                    "stress": stress,
-                    "douleurs": douleurs,
-                    "maladies": maladies,
                     "score": score,
                 }
 
                 st.toast("✅ Questionnaire soumis avec succès !")
+                sheet_name = f"{client['prenom']}_{client['nom']}"
+                data1 = {
+                    "action": "update_scor",  # <-- tu peux ajouter un champ pour indiquer l'action côté Apps Script
+                    "sheet_name": sheet_name,
+                    "scor": scor
+                }
+                try:
+                    response = requests.post(WEBHOOK_URL, data=data1, timeout=10)
+                    if response.status_code == 200:
+                        st.success("✅ Ton score santé a bien été ajouté à ton compte !")
+                    else:
+                        st.error(f"❌ Erreur serveur : {response.status_code} - {response.text}")
+                except Exception as e:
+                    st.error(f"❌ Erreur réseau : {e}")
+
                 show_result()  # Affiche le résultat immédiatement
 
         def show_result():
@@ -273,50 +234,63 @@ def show_dashboard(client):
 
             score = data['score']
             imc = data['imc']
-            body_fat_percentage = data['body_fat_percentage']
 
-            # --- Niveau de santé ---
-            if score >= 80:
-                st.success(f"🟢 Excellent ! Votre score santé est **{score}/100** ✅")
-            elif score >= 50:
-                st.warning(f"🟠 Moyen : Votre score santé est **{score}/100**. Il y a des points à améliorer.")
+            # --- Affichage IMC ---
+            st.subheader(f"📏 Votre IMC : **{imc:.1f}**")
+
+            # Échelle IMC
+            imc_scale = [
+                ("< 16", "Dénutrition", "🔴"),
+                ("16 - 18.4", "Sous-poids", "🟠"),
+                ("18.5 - 24.9", "Normal", "🟢"),
+                ("25 - 29.9", "Surpoids", "🟠"),
+                ("≥ 30", "Obésité", "🔴")
+            ]
+
+            # --- Trouver la catégorie ---
+            if imc < 16:
+                category = "Dénutrition"
+                color = "red"
+            elif imc < 18.5:
+                category = "Sous-poids"
+                color = "orange"
+            elif imc <= 24.9:
+                category = "Poids normal"
+                color = "green"
+            elif imc <= 29.9:
+                category = "Surpoids"
+                color = "orange"
             else:
-                st.error(
-                    f"🔴 Faible : Votre score santé est **{score}/100**. Une amélioration est fortement conseillée.")
+                category = "Obésité"
+                color = "red"
 
-            # --- IMC ---
-            st.info(f"📏 **IMC : {imc}** (idéal entre 18.5 et 24.9)")
-            st.info(f"📉 **Pourcentage de graisse corporelle estimé : {body_fat_percentage}%**")
+            st.markdown(f"📌 **Catégorie : <span style='color:{color}'>{category}</span>**", unsafe_allow_html=True)
+
+            # --- Jauge visuelle ---
+            st.write("### 📊 Position de votre IMC sur l'échelle")
+
+            # Échelle en texte + indicateur
+            scale_text = "16 | 18.5 | 25 | 30 | 40"
+            bar_length = 40  # longueur de la barre en caractères
+            # Normaliser la position (IMC entre 10 et 40)
+            normalized = min(max((imc - 10) / (40 - 10), 0), 1)
+            position = int(normalized * bar_length)
+
+            bar = "▁" * bar_length
+            bar = bar[:position] + "🔵" + bar[position + 1:]  # marqueur
+
+            st.markdown(f"`10` {bar} `40`")
 
             # --- Conseils personnalisés ---
             st.write("### 📝 Conseils personnalisés")
 
             if imc < 18.5:
-                st.write(
-                    "🔹 **Vous êtes en sous-poids.** Consultez un professionnel pour adapter votre alimentation.")
+                st.warning("🔹 **Vous êtes en sous-poids.** Consultez un professionnel pour adapter votre alimentation.")
             elif imc > 24.9:
-                st.write(
+                st.warning(
                     "🔹 **Votre IMC est au-dessus de la normale.** Une activité physique et une alimentation adaptée peuvent aider.")
-
-            if body_fat_percentage > 25:  # Seuil indicatif pour les hommes
-                st.write(
-                    "🔹 **Votre pourcentage de graisse corporelle est élevé.** Envisagez de consulter un professionnel pour un plan personnalisé.")
-
-            if data['sommeil'] < 7:
-                st.write("🔹 **Vous dormez trop peu.** Essayez d’avoir entre 7 et 9h de sommeil.")
-
-            if data['hydratation'] < 5:
-                st.write("🔹 **Buvez plus d’eau.** Visez au moins 1.5 à 2L par jour.")
-
-            if data['fumeur'] == "Oui":
-                st.write("🔹 **Arrêter de fumer améliorerait significativement votre santé.**")
-
-            if data['stress'] > 7:
-                st.write("🔹 **Votre stress est élevé.** Envisagez des techniques de relaxation ou de méditation.")
-
-            if data['activite'] == "Aucune":
-                st.write(
-                    "🔹 **Ajoutez une activité physique régulière.** Même 30 minutes de marche par jour aident beaucoup.")
+            else:
+                st.success("✅ Votre IMC est dans la zone optimale. Continuez à adopter un mode de vie sain !")
 
             # --- Boutons finaux ---
             col1, col2, col3 = st.columns(3)
@@ -341,6 +315,36 @@ def show_dashboard(client):
             with st.expander("📊 Voir mon score santé", expanded=True):
                 show_result()
 
+        with st.expander("Voir mon historique score santé", expanded=False):
+            sheet_name = f"{client['prenom']}_{client['nom']}"
+            try:
+                # Appel GET pour récupérer les scores
+                response = requests.get(f"{WEBHOOK_URL}?sheet_name={sheet_name}")
+                if response.status_code == 200:
+                    data = response.json()
+
+                    if "error" in data:
+                        st.warning("Aucun historique trouvé pour ce compte.")
+                    else:
+                        scores = data.get("scores", [])
+
+                        if not scores:
+                            st.info("Pas encore de score enregistré.")
+                        else:
+                            df = pd.DataFrame(scores)
+                            st.subheader("📊 Historique de tes scores santé")
+                            st.dataframe(df)
+
+                            # Affichage graphique
+                            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+                            df = df.dropna(subset=["date"])
+                            if not df.empty:
+                                st.line_chart(df.set_index("date")["score"])
+                else:
+                    st.error(f"Erreur serveur : {response.status_code}")
+            except Exception as e:
+                st.error(f"Erreur réseau : {e}")
+
         st.divider()
 
         st.metric(
@@ -353,6 +357,8 @@ def show_dashboard(client):
             st.session_state.current_page = "Page1"  # ✅ on change la page
             page = "Page1"
             st.rerun()
+
+
 
         st.divider()
 
@@ -442,14 +448,11 @@ def show_dashboard(client):
         Oui, nous nous engageons à vous trouver le coach qui vous convient le mieux. Si vous n'êtes pas satisfait, nous ferons le nécessaire pour vous proposer une alternative.
         """)
 
-
 # --------- Gestion de la session ---------
 if "client_connecte" not in st.session_state:
     st.session_state.client_connecte = None
 
 #st.sidebar.image("/Users/fareesaamir/Desktop/Screenshot 2025-06-16 at 16.37.20.png",width = 100)
-
-
 
 
 if page == ("Se déconnecter"):
@@ -486,11 +489,62 @@ elif page == "Créer un compte":
     dob = st.date_input("Date de naissance *", min_value=datetime.date(1900, 1, 1))
     email = st.text_input("Email *")
     telephone = st.text_input("Téléphone")
-    objectif = st.text_area("Objectif sportif *")
+
+    # === Objectifs et niveau ===
+    st.write("### 🏋️ Objectifs sportifs")
+    objectif = st.selectbox(
+        "Objectif sportif *",
+        [
+            "Perte de poids",
+            "Prise de masse musculaire",
+            "Amélioration de l’endurance",
+            "Préparation à une compétition",
+            "Remise en forme générale",
+            "Rééducation / récupération",
+            "Autre"
+        ]
+    )
     niveau = st.selectbox("Niveau sportif", ["Débutant", "Intermédiaire", "Avancé"])
+
+    # === Données physiques ===
+    st.write("### ⚖️ Données physiques")
     poids = st.number_input("Poids (kg)", min_value=20.0, max_value=300.0, step=0.1)
     taille = st.number_input("Taille (cm)", min_value=100, max_value=250)
+
+    # === Remarques libres ===
+    st.write("### 📝 Informations complémentaires")
     remarques = st.text_area("Remarques (santé, nutrition, blessures...)")
+
+    enable = st.checkbox("Enable camera")
+    picture = st.camera_input("Take a picture", disabled=not enable)
+
+    avatars = {
+        "Avatar 1": "https://avataaars.io/?avatarStyle=Circle&topType=ShortHairShortCurly&accessoriesType=Blank&hairColor=Brown&facialHairType=Blank&clotheType=Hoodie&clotheColor=PastelBlue&eyeType=Happy&eyebrowType=Default&mouthType=Smile&skinColor=Light",
+        "Avatar 2": "https://avataaars.io/?avatarStyle=Circle&topType=LongHairStraight&accessoriesType=Round&hairColor=Blonde&facialHairType=Blank&clotheType=BlazerShirt&clotheColor=PastelGreen&eyeType=Wink&eyebrowType=RaisedExcited&mouthType=Default&skinColor=Light",
+        "Avatar 3": "https://avataaars.io/?avatarStyle=Circle&topType=ShortHairDreads01&accessoriesType=Blank&hairColor=Black&facialHairType=MoustacheMagnum&facialHairColor=Black&clotheType=ShirtCrewNeck&clotheColor=PastelOrange&eyeType=Squint&eyebrowType=UpDown&mouthType=Smile&skinColor=Brown",
+        "Avatar 4": "https://avataaars.io/?avatarStyle=Circle&topType=Hijab&accessoriesType=Kurt&hairColor=BrownDark&facialHairType=Blank&clotheType=ShirtVNeck&clotheColor=Blue03&eyeType=Happy&eyebrowType=DefaultNatural&mouthType=Smile&skinColor=Light",
+        "Avatar 5": "https://avataaars.io/?avatarStyle=Circle&topType=ShortHairFrizzle&accessoriesType=Prescription02&hairColor=Red&facialHairType=Blank&clotheType=GraphicShirt&clotheColor=Gray02&eyeType=EyeRoll&eyebrowType=AngryNatural&mouthType=Twinkle&skinColor=Tanned",
+        "Avatar 6": "https://avataaars.io/?avatarStyle=Circle&topType=LongHairCurly&accessoriesType=Blank&hairColor=PastelPink&facialHairType=Blank&clotheType=BlazerSweater&clotheColor=Gray01&eyeType=Default&eyebrowType=FlatNatural&mouthType=Default&skinColor=Pale",
+        "Avatar 7": "https://avataaars.io/?avatarStyle=Circle&topType=Eyepatch&accessoriesType=Wayfarers&hairColor=BrownDark&facialHairType=BeardMedium&facialHairColor=BrownDark&clotheType=Hoodie&clotheColor=Heather&eyeType=Close&eyebrowType=SadConcerned&mouthType=Serious&skinColor=DarkBrown",
+        "Avatar 8": "https://avataaars.io/?avatarStyle=Circle&topType=LongHairBob&accessoriesType=Sunglasses&hairColor=Auburn&facialHairType=Blank&clotheType=ShirtScoopNeck&clotheColor=PastelYellow&eyeType=Hearts&eyebrowType=Default&mouthType=Smile&skinColor=Light"
+    }
+
+    st.write("### Choisissez votre image de profil")
+
+    # Affiche toutes les images avec leur nom, l'utilisateur sélectionne par exemple via un selectbox
+    choix_avatar = st.selectbox("Sélectionnez un avatar", options=list(avatars.keys()))
+
+    # Affiche l'image sélectionnée
+    st.image(avatars[choix_avatar], width=150)
+
+    # Quand tu récupères les données à envoyer, tu peux récupérer le lien ou charger l'image en base64
+    photo_profil_url = avatars[choix_avatar]
+
+    if picture:
+        # Convertir la photo en base64 (chaîne de texte)
+        photo_base64 = base64.b64encode(picture.getvalue()).decode("utf-8")
+    else:
+        photo_base64 = None
 
     if st.button("Créer le compte"):
         if nom and prenom and email and objectif:
@@ -507,12 +561,13 @@ elif page == "Créer un compte":
                 "poids": poids,
                 "taille": taille,
                 "sheet_name": sheet_name,
+                "photo_profil": photo_profil_url,
             }
 
             try:
                 response = requests.post(WEBHOOK_URL, data=data)
                 if response.status_code == 200:
-                    st.success(f"Compte créé et données enregistrées dans l'onglet « {sheet_name} » du Google Sheet.")
+                    st.success(f"Ton compte a été crée {prenom}, connecte toi pour accéder à ton compte ! ")
                 else:
                     st.error(f"Erreur serveur : {response.status_code} - {response.text}")
             except Exception as e:
@@ -524,164 +579,10 @@ if page == "Page1":
     if st.session_state.client_connecte is None:
         st.subheader("Connectez vous")
     else:
-        st.title("🩺 Bilan Santé Complet")
+        st.title("Bilan Santé Complet")
 
-        with st.form("form_sante_complet"):
-            st.subheader("1️⃣ Informations générales")
-            age = st.slider("Âge", 10, 100, 30)
-            taille = st.number_input("Taille (en cm)", min_value=100, max_value=250, value=170)
-            poids = st.number_input("Poids (en kg)", min_value=30, max_value=200, value=70)
-            sexe = st.radio("Sexe", ["Homme", "Femme", "Autre"])
-
-            st.subheader("2️⃣ Habitudes de vie")
-            sport = st.selectbox("Fréquence d’activité physique", ["Jamais", "1-2 fois/semaine", "3-4 fois/semaine", "Quotidiennement"])
-            sommeil = st.slider("Heures de sommeil en moyenne", 3, 12, 7)
-            alimentation = st.selectbox("Comment évaluez-vous votre alimentation ?", ["Très mauvaise", "Moyenne", "Bonne", "Excellente"])
-            hydratation = st.slider("Verres d’eau par jour", 0, 15, 6)
-            alcool = st.selectbox("Consommation d’alcool", ["Jamais", "Occasionnelle", "Régulière"])
-            tabac = st.selectbox("Consommation de tabac", ["Non-fumeur", "Fumeur occasionnel", "Fumeur régulier"])
-
-            st.subheader("3️⃣ Santé mentale & énergie")
-            stress = st.slider("Niveau de stress (0 = aucun, 10 = très élevé)", 0, 10, 5)
-            humeur = st.selectbox("Votre humeur globale", ["Mauvaise", "Moyenne", "Bonne", "Excellente"])
-            energie = st.slider("Votre niveau d’énergie quotidien (0 = épuisé, 10 = plein d’énergie)", 0, 10, 6)
-
-            st.subheader("4️⃣ Antécédents médicaux")
-            maladies = st.multiselect("Avez-vous des maladies chroniques ?", ["Hypertension", "Diabète", "Asthme", "Maladies cardiaques", "Troubles digestifs", "Aucune"])
-            medicaments = st.radio("Prenez-vous des médicaments régulièrement ?", ["Oui", "Non"])
-
-            st.subheader("5️⃣ Symptômes actuels")
-            symptomes = st.multiselect("Avez-vous ressenti récemment ces symptômes ?", ["Fatigue", "Douleurs musculaires", "Maux de tête", "Problèmes digestifs", "Difficultés respiratoires", "Aucun"])
-
-            st.subheader("6️⃣ Douleurs ou inconfort")
-            douleurs = st.selectbox("Avez-vous des douleurs physiques ?", ["Aucune", "Occasionnelles", "Fréquentes", "Chroniques"])
-            mobilite = st.slider("Évaluez votre mobilité générale (0 = très limitée, 10 = parfaite)", 0, 10, 8)
-
-            submitted = st.form_submit_button("✅ Calculer mon score santé")
-
-        # -------- CALCUL DU SCORE --------
-        def calculer_score():
-            score = 100
-
-            # Calcul de l'IMC
-            imc = poids / ((taille / 100) ** 2)
-            if imc < 18.5 or imc > 30:
-                score -= 10
-
-            # Calcul du pourcentage de graisse corporelle estimé
-            if sexe == "Homme":
-                body_fat_percentage = 1.20 * imc + 0.23 * age - 16.2
-            else:
-                body_fat_percentage = 1.20 * imc + 0.23 * age - 5.4
-
-            # Sport
-            if sport == "Jamais":
-                score -= 20
-            elif sport == "1-2 fois/semaine":
-                score -= 10
-
-            # Sommeil
-            if sommeil < 6 or sommeil > 9:
-                score -= 10
-
-            # Hydratation
-            if hydratation < 5:
-                score -= 5
-
-            # Alimentation
-            if alimentation == "Très mauvaise":
-                score -= 20
-            elif alimentation == "Moyenne":
-                score -= 10
-
-            # Alcool & Tabac
-            if alcool == "Régulière":
-                score -= 10
-            if tabac != "Non-fumeur":
-                score -= 15
-
-            # Stress & énergie
-            if stress > 7:
-                score -= 10
-            if energie < 5:
-                score -= 10
-
-            # Maladies chroniques
-            if "Aucune" not in maladies and len(maladies) > 0:
-                score -= 15
-
-            # Symptômes
-            if "Aucun" not in symptomes and len(symptomes) > 0:
-                score -= 10
-
-            # Médicaments réguliers
-            if medicaments == "Oui":
-                score -= 5
-
-            # Douleurs & mobilité
-            if douleurs in ["Fréquentes", "Chroniques"]:
-                score -= 10
-            if mobilite < 5:
-                score -= 10
-
-            return max(0, min(score, 100)), imc, body_fat_percentage
-
-        # -------- AFFICHAGE DES RESULTATS --------
-        if submitted:
-            score, imc, body_fat_percentage = calculer_score()
-            st.subheader("📊 Résultat de votre bilan")
-            st.metric("Votre score santé", f"{score}/100")
-
-            # Interprétation
-            if score >= 80:
-                st.success("✅ Excellent état de santé global ! Continuez ainsi 💪")
-            elif score >= 60:
-                st.warning("⚠️ Santé correcte mais quelques points à améliorer.")
-            else:
-                st.error("❌ Santé fragile, il est conseillé de consulter un professionnel.")
-
-            # IMC info
-            st.write(f"Votre IMC est **{imc:.1f}**")
-            if imc < 18.5:
-                st.write("⚠️ Vous êtes en **insuffisance pondérale**.")
-            elif imc > 30:
-                st.write("⚠️ Vous êtes en **obésité**.")
-            elif imc > 25:
-                st.write("⚠️ Vous êtes en **surpoids**.")
-            else:
-                st.write("✅ Votre IMC est **normal**.")
-
-            # Pourcentage de graisse corporelle
-            st.write(f"Votre pourcentage de graisse corporelle estimé est **{body_fat_percentage:.1f}%**")
-            if body_fat_percentage > 25:  # Seuil indicatif pour les hommes
-                st.write("⚠️ Votre pourcentage de graisse corporelle est **élevé**.")
-
-            # Conseils supplémentaires
-            st.subheader("📝 Conseils personnalisés")
-            if imc < 18.5 or imc > 25:
-                st.write("🔹 Consultez un professionnel pour adapter votre alimentation et votre activité physique.")
-            if body_fat_percentage > 25:
-                st.write("🔹 Envisagez de consulter un professionnel pour un plan personnalisé.")
-            if sport == "Jamais":
-                st.write("🔹 Ajoutez une activité physique régulière. Même 30 minutes de marche par jour aident beaucoup.")
-            if stress > 7:
-                st.write("🔹 Votre stress est élevé. Envisagez des techniques de relaxation ou de méditation.")
-            if tabac != "Non-fumeur":
-                st.write("🔹 Arrêter de fumer améliorerait significativement votre santé.")
-
-            # Boutons après le résultat
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🔄 Refaire le questionnaire"):
-                    st.experimental_rerun()
-            with col2:
-                if st.button("📅 Prendre rendez-vous avec un coach"):
-                    st.markdown("[👉 Cliquez ici pour réserver votre séance](https://calendly.com/)")
 
 
 #streamlit run main.py
-#AKfycbwqyqRYnmL1pO7JB3Hd_XUudYMNrecuSxsO0Lpqqmbc3O-_1QuLRjRusa-qQJzQYf3CYg
-#AKfycbyClKAQ-ZZg9i5ca0F3mJzeasbSsgbi5bFxdTTzf_LqZqZMP-nrUC1vQiiDxB-BBo27zw
-#https://script.google.com/macros/s/AKfycbwqyqRYnmL1pO7JB3Hd_XUudYMNrecuSxsO0Lpqqmbc3O-_1QuLRjRusa-qQJzQYf3CYg/exec
-#https://script.google.com/macros/s/AKfycbyClKAQ-ZZg9i5ca0F3mJzeasbSsgbi5bFxdTTzf_LqZqZMP-nrUC1vQiiDxB-BBo27zw/exec
-#18yBQURMLqjvTWWkpmbEcalTab89PMixqis01hUp9EhU
+
+
