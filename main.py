@@ -266,20 +266,6 @@ def show_dashboard(client):
 
             st.markdown(f"📌 **Catégorie : <span style='color:{color}'>{category}</span>**", unsafe_allow_html=True)
 
-            # --- Jauge visuelle ---
-            st.write("### 📊 Position de votre IMC sur l'échelle")
-
-            # Échelle en texte + indicateur
-            scale_text = "16 | 18.5 | 25 | 30 | 40"
-            bar_length = 40  # longueur de la barre en caractères
-            # Normaliser la position (IMC entre 10 et 40)
-            normalized = min(max((imc - 10) / (40 - 10), 0), 1)
-            position = int(normalized * bar_length)
-
-            bar = "▁" * bar_length
-            bar = bar[:position] + "🔵" + bar[position + 1:]  # marqueur
-
-            st.markdown(f"`10` {bar} `40`")
 
             # --- Conseils personnalisés ---
             st.write("### 📝 Conseils personnalisés")
